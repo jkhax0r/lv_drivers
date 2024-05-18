@@ -56,6 +56,11 @@
  *      TYPEDEFS
  **********************/
 
+ //TODO
+#define BUTTON_DEBOUNCE_TIME    1
+#define BUTTON_RELEASE_TIME     50          // NOTE: should be higher than BUTTON_DEBOUNCE_TIME on button h/w
+
+
 typedef struct _lv_win32_keyboard_queue_item_t
 {
     SLIST_ENTRY ItemEntry;
@@ -63,12 +68,27 @@ typedef struct _lv_win32_keyboard_queue_item_t
     lv_indev_state_t state;
 } lv_win32_keyboard_queue_item_t;
 
+
+typedef enum {
+    BUTTON_STATE_NOT_PRESSED,
+    BUTTON_STATE_PRESSED,
+    BUTTON_STATE_PRESSED_WAITING_DEBOUNCE
+} button_state_t;
+
+typedef struct
+{
+    button_state_t state;
+    uint16_t button_press_count;
+    uint32_t button_state_change_time;    
+} button_state_info_t;
+
 typedef struct _lv_win32_window_context_t
 {
     lv_disp_t* display_device_object;
     lv_indev_t* mouse_device_object;
     lv_indev_t* mousewheel_device_object;
     lv_indev_t* keyboard_device_object;
+    lv_indev_t* mopeka_device_object;
 
     lv_coord_t display_hor_res;
     lv_coord_t display_ver_res;
@@ -86,6 +106,11 @@ typedef struct _lv_win32_window_context_t
     lv_indev_state_t mousewheel_state;
     int16_t mousewheel_enc_diff;
     lv_indev_drv_t mousewheel_driver;
+
+    lv_indev_drv_t mopeka_button_encoder;    
+    uint16_t last_button_press_count[2];
+    button_state_info_t left;
+    button_state_info_t right;
 
     CRITICAL_SECTION keyboard_mutex;
     PSLIST_HEADER keyboard_queue;

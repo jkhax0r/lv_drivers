@@ -346,7 +346,8 @@ EXTERN_C bool lv_win32_init(
 
     lv_win32_pointer_device_object = context->mouse_device_object;
     lv_win32_keypad_device_object = context->keyboard_device_object;
-    lv_win32_encoder_device_object = context->mousewheel_device_object;
+    //lv_win32_encoder_device_object = context->mousewheel_device_object;
+    lv_win32_encoder_device_object = context->mopeka_device_object;
 
     return true;
 }
@@ -745,6 +746,100 @@ static void lv_win32_keypad_driver_read_callback(
     LeaveCriticalSection(&context->keyboard_mutex);
 }
 
+uint32_t tick_ms(void) {
+    return GetTickCount();
+}
+
+uint32_t tock_ms(uint32_t t) {
+    return GetTickCount() - t;
+}
+
+static void lvgl_button_read(lv_indev_drv_t* indev_drv, lv_indev_data_t* data)
+{
+    lv_win32_window_context_t* context = (lv_win32_window_context_t*)(
+        lv_win32_get_display_context(indev_drv->disp));
+    if (!context)
+    {
+        return;
+    }
+
+    //const uint8_t mask = (1 << i);
+    //BYTE keys[256];
+    //GetKeyboardState(keys);
+
+
+
+    button_state_info_t* left_button = &context->left;
+    button_state_info_t* right_button = &context->right;
+    
+    if (left_button->state == BUTTON_STATE_PRESSED_WAITING_DEBOUNCE) {
+        if (tock_ms(left_button->button_state_change_time) >= BUTTON_DEBOUNCE_TIME) {
+            left_button->state = BUTTON_STATE_PRESSED;
+            left_button->button_press_count++;
+        }        
+    }
+    if (right_button->state == BUTTON_STATE_PRESSED_WAITING_DEBOUNCE) {
+        if (tock_ms(right_button->button_state_change_time) >= BUTTON_DEBOUNCE_TIME) {
+            right_button->state = BUTTON_STATE_PRESSED;
+            right_button->button_press_count++;
+        }
+    }
+
+    // If a button press has already been "consumed", then override it as not pressed.  This will prevent enter and then left/right from hitting twice... or left/right then enter
+    button_state_t left = left_button->state;
+    button_state_t right = right_button->state;
+    if (context->last_button_press_count[0] == left_button->button_press_count) {
+        left = BUTTON_STATE_NOT_PRESSED;
+    }
+    if (context->last_button_press_count[1] == right_button->button_press_count) {
+        right = BUTTON_STATE_NOT_PRESSED;
+    }
+
+    data->key = LV_KEY_ENTER;
+    if (left != BUTTON_STATE_NOT_PRESSED && right != BUTTON_STATE_NOT_PRESSED) {
+
+        //NRF_LOG_INFO("p");
+        data->state = LV_INDEV_STATE_PRESSED;        
+
+        // Set these to basically mark this press as consumed
+        context->last_button_press_count[0] = left_button->button_press_count;
+        context->last_button_press_count[1] = right_button->button_press_count;
+        return;
+    }
+
+    //TODO: handle quick press but then not held long enought so press isn't skipped
+
+    int16_t dt = left_button->button_press_count - context->last_button_press_count[0];    
+    if (dt > 0) {
+
+        // A little weird, count all previous presses except the one that is still waiting for BUTTON_RELEASE_TIME to finish
+        if (--dt) {
+            data->enc_diff -= dt;
+            context->last_button_press_count[0] += dt;
+        }
+
+        if (tock_ms(left_button->button_state_change_time) >= BUTTON_RELEASE_TIME) {       //TODO: not quite right... pressing fast could lead to this never hitting
+            data->enc_diff--;
+            context->last_button_press_count[0]++;
+        }
+    }
+
+    dt = right_button->button_press_count - context->last_button_press_count[1];
+    if (dt > 0) {
+
+        // A little weird, count all previous presses except the one that is still waiting for BUTTON_RELEASE_TIME to finish
+        if (--dt) {
+            data->enc_diff += dt;
+            context->last_button_press_count[1] += dt;
+        }
+
+        if (tock_ms(right_button->button_state_change_time) >= BUTTON_RELEASE_TIME) {       //TODO: not quite right... pressing fast could lead to this never hitting
+            data->enc_diff++;
+            context->last_button_press_count[1]++;
+        }
+    }
+}
+
 static void lv_win32_encoder_driver_read_callback(
     lv_indev_drv_t* indev_drv,
     lv_indev_data_t* data)
@@ -870,6 +965,16 @@ static LRESULT CALLBACK lv_win32_window_message_callback(
         {
             return -1;
         }
+
+        lv_indev_drv_init(&context->mopeka_button_encoder);
+        context->mopeka_button_encoder.type = LV_INDEV_TYPE_ENCODER;
+        context->mopeka_button_encoder.read_cb = &lvgl_button_read;
+        context->mopeka_device_object = lv_indev_drv_register(&context->mopeka_button_encoder);
+        memset(&context->left, 0, sizeof(context->left));
+        memset(&context->right, 0, sizeof(context->right));
+        context->last_button_press_count[0] = 0;
+        context->last_button_press_count[1] = 0;
+
 
         InitializeCriticalSection(&context->keyboard_mutex);
         context->keyboard_queue = _aligned_malloc(
@@ -1015,10 +1120,35 @@ static LRESULT CALLBACK lv_win32_window_message_callback(
                 translated_key = LV_KEY_DOWN;
                 break;
             case VK_LEFT:
-                translated_key = LV_KEY_LEFT;
+                //translated_key = LV_KEY_LEFT;
+                
+                if (uMsg == WM_KEYDOWN) {
+                    if (context->left.state == BUTTON_STATE_NOT_PRESSED) {
+                        context->left.state = BUTTON_STATE_PRESSED_WAITING_DEBOUNCE;
+                        context->left.button_state_change_time = GetTickCount();
+                    }
+                }
+                else {
+                    if (context->left.state != BUTTON_STATE_NOT_PRESSED) {
+                        context->left.state = BUTTON_STATE_NOT_PRESSED;
+                        context->left.button_state_change_time = GetTickCount();                        
+                    }
+                }
                 break;
-            case VK_RIGHT:
-                translated_key = LV_KEY_RIGHT;
+            case VK_RIGHT:                
+                //translated_key = LV_KEY_RIGHT;
+                if (uMsg == WM_KEYDOWN) {
+                    if (context->right.state == BUTTON_STATE_NOT_PRESSED) {
+                        context->right.state = BUTTON_STATE_PRESSED_WAITING_DEBOUNCE;
+                        context->right.button_state_change_time = GetTickCount();
+                    }
+                }
+                else {
+                    if (context->right.state != BUTTON_STATE_NOT_PRESSED) {
+                        context->right.state = BUTTON_STATE_NOT_PRESSED;
+                        context->right.button_state_change_time = GetTickCount();
+                    }
+                }
                 break;
             case VK_ESCAPE:
                 translated_key = LV_KEY_ESC;
@@ -1044,7 +1174,7 @@ static LRESULT CALLBACK lv_win32_window_message_callback(
                 break;
             case VK_END:
                 translated_key = LV_KEY_END;
-                break;
+                break;            
             default:
                 skip_translation = true;
                 break;
@@ -1242,7 +1372,7 @@ static LRESULT CALLBACK lv_win32_window_message_callback(
         {
             if (context->display_framebuffer_context_handle)
             {
-                SetStretchBltMode(hdc, HALFTONE);
+                SetStretchBltMode(hdc, COLORONCOLOR);
 
                 StretchBlt(
                     hdc,
@@ -1296,6 +1426,11 @@ static LRESULT CALLBACK lv_win32_window_message_callback(
                 context->mousewheel_device_object;
             context->mousewheel_device_object = NULL;
             lv_indev_delete(mousewheel_device_object);
+
+            lv_indev_t* mopeka_device_object =
+                context->mopeka_device_object;
+            context->mopeka_device_object = NULL;
+            lv_indev_delete(mopeka_device_object);
 
             lv_indev_t* keyboard_device_object =
                 context->keyboard_device_object;
